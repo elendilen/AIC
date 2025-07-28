@@ -16,25 +16,52 @@ class MockEnvironment:
         self.max_steps = max_steps
         self.current_step = 0
         self.current_obs = None
-        
+
+        # 尝试从 config.json 读取观测均值
+        self.obs_init_mean = None
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+        if os.path.exists(config_path):
+            try:
+                import json
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                # 支持 config["obs_init_mean"] 或自动用训练集均值
+                if "obs_init_mean" in config:
+                    self.obs_init_mean = np.array(config["obs_init_mean"], dtype=np.float32)
+                else:
+                    # 尝试用 data.csv 的均值
+                    data_path = config.get("data_config", {}).get("data_path", None)
+                    if data_path and os.path.exists(os.path.join(os.path.dirname(__file__), data_path)):
+                        import pandas as pd
+                        df = pd.read_csv(os.path.join(os.path.dirname(__file__), data_path))
+                        obs_cols = [c for c in df.columns if c.startswith("obs_")]
+                        self.obs_init_mean = df[obs_cols].mean().values.astype(np.float32)
+            except Exception as e:
+                print(f"[警告] config.json读取观测均值失败: {e}")
+                self.obs_init_mean = None
+        if self.obs_init_mean is None:
+            # 默认与训练数据分布接近
+            self.obs_init_mean = np.array([-0.45, -0.40, -0.45, -0.48, -0.40], dtype=np.float32)
+
         # 环境参数
         self.target_state = np.array([0.5, -0.3, 0.0, 0.2, -0.1])  # 目标状态
         self.noise_std = 0.05  # 噪声标准差
         self.delay_steps = 3   # 控制延迟步数
         self.action_buffer = []
-        
+
         # 系统动态参数
         self.A = np.random.uniform(-0.1, 0.1, (obs_dim, obs_dim))  # 状态转移矩阵
         self.B = np.random.uniform(-0.2, 0.2, (obs_dim, action_dim))  # 控制矩阵
-        
+
         # 稳定性调整
         self.A *= 0.95  # 确保系统稳定
         np.fill_diagonal(self.A, 0.9)  # 主对角线
     
     def reset(self) -> np.ndarray:
-        """重置环境"""
+        """重置环境，观测初始化分布与训练一致"""
         self.current_step = 0
-        self.current_obs = np.random.uniform(-0.5, 0.5, self.obs_dim)
+        # 用均值加微小扰动初始化
+        self.current_obs = self.obs_init_mean + np.random.normal(0, 0.01, self.obs_dim)
         self.action_buffer = [np.zeros(self.action_dim) for _ in range(self.delay_steps)]
         return self.current_obs.copy()
     

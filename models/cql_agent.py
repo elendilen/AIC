@@ -97,6 +97,9 @@ class CQLAgent:
         
         with torch.no_grad():
             action = self.policy(state_tensor)
+            # 如果policy返回3维tensor，取最后一个时间步
+            if action.dim() == 3:
+                action = action[:, -1, :]
             
             # 添加探索噪声
             if noise_scale > 0:
@@ -114,15 +117,31 @@ class CQLAgent:
         next_states = batch['next_states']
         dones = batch['dones']
         
+        # 处理states维度：如果是3维，取最后一个时间步用于Q网络
+        if states.dim() == 3:
+            current_states = states[:, -1, :]  # [batch_size, seq_len, state_dim] -> [batch_size, state_dim]
+        else:
+            current_states = states
+            
+        if next_states.dim() == 3:
+            next_current_states = next_states[:, -1, :]
+        else:
+            next_current_states = next_states
+        
         # 当前Q值
-        current_q1 = self.q1(states, actions)
-        current_q2 = self.q2(states, actions)
+        current_q1 = self.q1(current_states, actions)
+        current_q2 = self.q2(current_states, actions)
         
         # 目标Q值
         with torch.no_grad():
+            # 传递完整的序列给策略网络
             next_actions = self.target_policy(next_states)
-            target_q1 = self.target_q1(next_states, next_actions)
-            target_q2 = self.target_q2(next_states, next_actions)
+            # 如果policy返回3维tensor，取最后一个时间步
+            if next_actions.dim() == 3:
+                next_actions = next_actions[:, -1, :]
+                
+            target_q1 = self.target_q1(next_current_states, next_actions)
+            target_q2 = self.target_q2(next_current_states, next_actions)
             target_q = torch.min(target_q1, target_q2)
             target_q = rewards + (1 - dones) * self.gamma * target_q
         
@@ -137,28 +156,38 @@ class CQLAgent:
         states = batch['states']
         actions = batch['actions']
         
+        # 处理states维度：如果是3维，取最后一个时间步用于Q网络
+        if states.dim() == 3:
+            current_states = states[:, -1, :]  # [batch_size, seq_len, state_dim] -> [batch_size, state_dim]
+        else:
+            current_states = states
+        
         # 随机动作Q值
-        batch_size = states.shape[0]
-        random_actions = torch.uniform(-1, 1, (batch_size, 10, self.action_dim)).to(self.device)
+        batch_size = current_states.shape[0]
+        random_actions = torch.FloatTensor(batch_size, 10, self.action_dim).uniform_(-1, 1).to(self.device)
         
         # 计算随机动作的Q值
         q1_random = []
         q2_random = []
         for i in range(10):
-            q1_random.append(self.q1(states, random_actions[:, i, :]))
-            q2_random.append(self.q2(states, random_actions[:, i, :]))
+            q1_random.append(self.q1(current_states, random_actions[:, i, :]))
+            q2_random.append(self.q2(current_states, random_actions[:, i, :]))
         
         q1_random = torch.cat(q1_random, dim=1)
         q2_random = torch.cat(q2_random, dim=1)
         
-        # 策略动作Q值
+        # 策略动作Q值 - 传递完整的序列给策略网络
         policy_actions = self.policy(states)
-        q1_policy = self.q1(states, policy_actions)
-        q2_policy = self.q2(states, policy_actions)
+        # 如果policy返回3维tensor，取最后一个时间步
+        if policy_actions.dim() == 3:
+            policy_actions = policy_actions[:, -1, :]
+            
+        q1_policy = self.q1(current_states, policy_actions)
+        q2_policy = self.q2(current_states, policy_actions)
         
         # 数据动作Q值
-        q1_data = self.q1(states, actions)
-        q2_data = self.q2(states, actions)
+        q1_data = self.q1(current_states, actions)
+        q2_data = self.q2(current_states, actions)
         
         # CQL损失
         cql1_loss = torch.logsumexp(q1_random, dim=1).mean() - q1_data.mean()
@@ -172,12 +201,21 @@ class CQLAgent:
         """计算策略损失"""
         states = batch['states']
         
-        # 策略动作
+        # 处理states维度：如果是3维，取最后一个时间步用于Q网络
+        if states.dim() == 3:
+            current_states = states[:, -1, :]  # [batch_size, seq_len, state_dim] -> [batch_size, state_dim]
+        else:
+            current_states = states
+        
+        # 策略动作 - 传递完整的序列给策略网络
         policy_actions = self.policy(states)
+        # 如果policy返回3维tensor，取最后一个时间步
+        if policy_actions.dim() == 3:
+            policy_actions = policy_actions[:, -1, :]
         
         # Q值
-        q1_policy = self.q1(states, policy_actions)
-        q2_policy = self.q2(states, policy_actions)
+        q1_policy = self.q1(current_states, policy_actions)
+        q2_policy = self.q2(current_states, policy_actions)
         q_policy = torch.min(q1_policy, q2_policy)
         
         # 策略损失（最大化Q值）
@@ -187,26 +225,29 @@ class CQLAgent:
     
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """更新网络参数"""
-        # 计算损失
-        q1_loss, q2_loss = self.compute_q_loss(batch)
+        # 更新Q1网络
+        q1_loss, _ = self.compute_q_loss(batch)
         cql_loss = self.compute_cql_loss(batch)
-        policy_loss = self.compute_policy_loss(batch)
-        
-        # 更新Q网络
         total_q1_loss = q1_loss + self.cql_alpha * cql_loss
-        total_q2_loss = q2_loss + self.cql_alpha * cql_loss
         
         self.q1_optimizer.zero_grad()
-        total_q1_loss.backward(retain_graph=True)
+        total_q1_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q1.parameters(), 1.0)
         self.q1_optimizer.step()
         
+        # 更新Q2网络（重新计算损失以避免梯度冲突）
+        _, q2_loss = self.compute_q_loss(batch)
+        cql_loss_2 = self.compute_cql_loss(batch)
+        total_q2_loss = q2_loss + self.cql_alpha * cql_loss_2
+        
         self.q2_optimizer.zero_grad()
-        total_q2_loss.backward(retain_graph=True)
+        total_q2_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q2.parameters(), 1.0)
         self.q2_optimizer.step()
         
         # 更新策略网络
+        policy_loss = self.compute_policy_loss(batch)
+        
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)

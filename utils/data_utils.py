@@ -171,6 +171,20 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
                 start_col = len(obs_cols_sorted) if 'obs_cols_sorted' in locals() else 5
                 data['action'] = df.iloc[:, start_col:start_col+3].values
         
+        # 轨迹索引 - 需要在处理next_obs之前先处理index
+        if 'index' in df.columns:
+            data['index'] = df['index'].values
+        elif 'trajectory_id' in df.columns:
+            data['index'] = df['trajectory_id'].values
+        elif 'traj_id' in df.columns:
+            data['index'] = df['traj_id'].values
+        else:
+            # 如果没有轨迹索引，根据数据长度自动分割
+            traj_length = 1000  # 假设每条轨迹1000步
+            num_trajectories = len(df) // traj_length
+            data['index'] = np.repeat(np.arange(num_trajectories), traj_length)[:len(df)]
+            print(f"警告: 未找到轨迹索引，自动创建{num_trajectories}条轨迹")
+
         # 下一个观测 (生成next_obs数据)
         # 这个数据集似乎没有next_obs列，我们需要生成它
         if 'next_obs' in df.columns or any(col.startswith('next_obs') for col in df.columns):

@@ -56,8 +56,11 @@ try:
             action = agent.get_action(obs)
             actions.append(action.copy())
             
-            # 模拟状态变化
-            obs = obs + 0.1 * action[:5] + np.random.normal(0, 0.02, 5)
+            # 模拟状态变化 (修复维度不匹配问题)
+            # 使用动作的前3个分量来影响观测的前3个分量
+            state_change = np.zeros(5)
+            state_change[:3] = 0.1 * action[:3]
+            obs = obs + state_change + np.random.normal(0, 0.02, 5)
             obs = np.clip(obs, -1, 1).astype(np.float32)
         
         # 检查动作的一致性
