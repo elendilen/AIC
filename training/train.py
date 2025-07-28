@@ -49,7 +49,7 @@ class TrainingConfig:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
         # 路径设置
-        self.data_path = 'data/offline_data.csv'
+        self.data_path = 'assets/data.csv'
         self.save_dir = 'checkpoints'
         self.log_dir = 'logs'
 

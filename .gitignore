@@ -195,6 +195,7 @@ datasets/
 *.xlsx
 *.xls
 !sample_data.csv  # 保留示例数据文件
+!assets/data.csv  # 保留比赛数据文件
 
 # 训练输出
 checkpoints/

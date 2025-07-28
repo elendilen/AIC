@@ -133,8 +133,14 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
         # 解析数据
         data = {}
         
-        # 观测数据 (假设obs列包含5维数据)
-        if 'obs' in df.columns:
+        # 观测数据 (查找obs_1到obs_5列)
+        obs_cols = [col for col in df.columns if col.startswith('obs_')]
+        if len(obs_cols) >= 5:
+            # 使用obs_1到obs_5列
+            obs_cols_sorted = sorted(obs_cols)[:5]  # 取前5列
+            data['obs'] = df[obs_cols_sorted].values
+            print(f"使用观测列: {obs_cols_sorted}")
+        elif 'obs' in df.columns:
             # 如果obs是字符串形式的数组，需要解析
             if isinstance(df['obs'].iloc[0], str):
                 obs_data = []
@@ -143,16 +149,17 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
                     obs_data.append(obs_array)
                 data['obs'] = np.array(obs_data)
             else:
-                # 如果obs列是分开的多列
-                obs_cols = [col for col in df.columns if col.startswith('obs')]
-                if len(obs_cols) >= 5:
-                    data['obs'] = df[obs_cols[:5]].values
-                else:
-                    # 假设前5列是观测数据
-                    data['obs'] = df.iloc[:, :5].values
+                # 假设前5列是观测数据
+                data['obs'] = df.iloc[:, :5].values
         
-        # 动作数据 (假设action列包含3维数据)
-        if 'action' in df.columns:
+        # 动作数据 (查找action_1到action_3列)
+        action_cols = [col for col in df.columns if col.startswith('action_')]
+        if len(action_cols) >= 3:
+            # 使用action_1到action_3列
+            action_cols_sorted = sorted(action_cols)[:3]  # 取前3列
+            data['action'] = df[action_cols_sorted].values
+            print(f"使用动作列: {action_cols_sorted}")
+        elif 'action' in df.columns:
             if isinstance(df['action'].iloc[0], str):
                 action_data = []
                 for action_str in df['action']:
@@ -160,28 +167,37 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
                     action_data.append(action_array)
                 data['action'] = np.array(action_data)
             else:
-                action_cols = [col for col in df.columns if col.startswith('action')]
-                if len(action_cols) >= 3:
-                    data['action'] = df[action_cols[:3]].values
-                else:
-                    # 假设接下来3列是动作数据
-                    data['action'] = df.iloc[:, 5:8].values
+                # 假设接下来3列是动作数据  
+                start_col = len(obs_cols_sorted) if 'obs_cols_sorted' in locals() else 5
+                data['action'] = df.iloc[:, start_col:start_col+3].values
         
-        # 下一个观测
-        if 'next_obs' in df.columns:
-            if isinstance(df['next_obs'].iloc[0], str):
-                next_obs_data = []
-                for obs_str in df['next_obs']:
-                    obs_array = np.fromstring(obs_str.strip('[]'), sep=' ')
-                    next_obs_data.append(obs_array)
-                data['next_obs'] = np.array(next_obs_data)
+        # 下一个观测 (生成next_obs数据)
+        # 这个数据集似乎没有next_obs列，我们需要生成它
+        if 'next_obs' in df.columns or any(col.startswith('next_obs') for col in df.columns):
+            next_obs_cols = [col for col in df.columns if col.startswith('next_obs')]
+            if len(next_obs_cols) >= 5:
+                data['next_obs'] = df[sorted(next_obs_cols)[:5]].values
             else:
-                next_obs_cols = [col for col in df.columns if col.startswith('next_obs')]
-                if len(next_obs_cols) >= 5:
-                    data['next_obs'] = df[next_obs_cols[:5]].values
-                else:
-                    # 使用obs数据向前偏移一步作为next_obs
-                    data['next_obs'] = np.roll(data['obs'], -1, axis=0)
+                # 使用obs数据向前偏移一步作为next_obs
+                data['next_obs'] = np.roll(data['obs'], -1, axis=0)
+        else:
+            # 生成next_obs：按轨迹组织数据，每个轨迹内部向前偏移一步
+            next_obs = []
+            unique_indices = np.unique(data['index'])
+            
+            for idx in unique_indices:
+                mask = data['index'] == idx
+                traj_obs = data['obs'][mask]
+                
+                # 创建该轨迹的next_obs
+                traj_next_obs = np.zeros_like(traj_obs)
+                traj_next_obs[:-1] = traj_obs[1:]  # 向前偏移
+                traj_next_obs[-1] = traj_obs[-1]   # 最后一步保持不变
+                
+                next_obs.append(traj_next_obs)
+            
+            data['next_obs'] = np.vstack(next_obs)
+            print("自动生成next_obs数据")
         
         # 奖励数据
         if 'reward' in df.columns:
@@ -196,6 +212,8 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
             data['index'] = df['index'].values
         elif 'trajectory_id' in df.columns:
             data['index'] = df['trajectory_id'].values
+        elif 'traj_id' in df.columns:
+            data['index'] = df['traj_id'].values
         else:
             # 如果没有轨迹索引，根据数据长度自动分割
             traj_length = 1000  # 假设每条轨迹1000步
@@ -203,14 +221,27 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
             data['index'] = np.repeat(np.arange(num_trajectories), traj_length)[:len(df)]
             print(f"警告: 未找到轨迹索引，自动创建{num_trajectories}条轨迹")
         
-        # 数据类型转换和范围检查
+        # 数据类型转换和范围处理
         for key in ['obs', 'action', 'next_obs']:
             if key in data:
                 data[key] = data[key].astype(np.float32)
-                # 确保数据在[-1, 1]范围内
-                if np.any(np.abs(data[key]) > 1.0):
-                    print(f"警告: {key}数据超出[-1,1]范围，进行归一化")
-                    data[key] = np.clip(data[key], -1.0, 1.0)
+                
+                # 对于观测数据，如果不在[-1,1]范围内，进行归一化
+                if key in ['obs', 'next_obs']:
+                    data_min = data[key].min()
+                    data_max = data[key].max()
+                    if data_min < -1.0 or data_max > 1.0:
+                        print(f"警告: {key}数据范围[{data_min:.3f}, {data_max:.3f}]超出[-1,1]，进行归一化")
+                        # 归一化到[-1, 1]范围
+                        data_range = data_max - data_min
+                        data[key] = 2 * (data[key] - data_min) / data_range - 1
+                        print(f"归一化后{key}范围: [{data[key].min():.3f}, {data[key].max():.3f}]")
+                
+                # 对于动作数据，确保在[-1, 1]范围内
+                elif key == 'action':
+                    if np.any(np.abs(data[key]) > 1.0):
+                        print(f"警告: {key}数据超出[-1,1]范围，进行裁剪")
+                        data[key] = np.clip(data[key], -1.0, 1.0)
         
         data['reward'] = data['reward'].astype(np.float32)
         data['index'] = data['index'].astype(np.int32)
