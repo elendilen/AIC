@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
+from network_type.policy_network import PolicyNetwork
+from network_type.mlp import Mlp
 import numpy as np
+import random
+from abc import ABC, abstractmethod
 from collections import deque
 from typing import Any, Dict, List, Optional
 import os
@@ -8,110 +12,67 @@ import os
 
 class BaseAgent:
     """基础代理类"""
-    def __init__(self):
-        pass
-    
-    def get_action(self, obs: np.ndarray) -> np.ndarray:
-        """获取动作的基础接口"""
-        raise NotImplementedError
-
-
-class PolicyNetwork(nn.Module):
-    """策略网络，处理时间延迟、噪声和部分可观测性"""
-    
-    def __init__(self, obs_dim=5, action_dim=3, hidden_dim=256, seq_len=10):
-        super(PolicyNetwork, self).__init__()
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.seq_len = seq_len
-        
-        # LSTM编码器处理时序信息和部分可观测性
-        self.lstm = nn.LSTM(
-            input_size=obs_dim,
-            hidden_size=hidden_dim // 2,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.1
-        )
-        
-        # 噪声过滤层
-        self.noise_filter = nn.Sequential(
-            nn.Linear(hidden_dim // 2, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(0.1)
-        )
-        
-        # 状态重构层
-        self.state_reconstructor = nn.Sequential(
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU()
-        )
-        
-        # 策略网络
-        self.policy_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, action_dim),
-            nn.Tanh()  # 输出范围 [-1, 1]
-        )
-        
-        # 初始化权重
-        self.apply(self._init_weights)
-    
-    def _init_weights(self, module):
-        """权重初始化"""
-        if isinstance(module, nn.Linear):
-            torch.nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                torch.nn.init.constant_(module.bias, 0)
-        elif isinstance(module, nn.LSTM):
-            for name, param in module.named_parameters():
-                if 'weight' in name:
-                    torch.nn.init.xavier_uniform_(param)
-                elif 'bias' in name:
-                    torch.nn.init.constant_(param, 0)
-    
-    def forward(self, obs_sequence):
+    def __init__(self, seed: int = None):
         """
-        前向传播
-        Args:
-            obs_sequence: [batch_size, seq_len, obs_dim] 或 [seq_len, obs_dim]
-        Returns:
-            action: [batch_size, action_dim] 或 [action_dim]
+        参数:
+          seed (int, optional): 随机种子；如果不为 None，将同时设置 Python、NumPy、PyTorch 的随机性。
         """
-        if obs_sequence.dim() == 2:
-            obs_sequence = obs_sequence.unsqueeze(0)  # 添加batch维度
-            squeeze_output = True
-        else:
-            squeeze_output = False
-        
-        # LSTM编码
-        lstm_out, (hidden, cell) = self.lstm(obs_sequence)
-        
-        # 取最后一个时间步的输出
-        last_hidden = lstm_out[:, -1, :]
-        
-        # 噪声过滤
-        filtered_state = self.noise_filter(last_hidden)
-        
-        # 状态重构
-        reconstructed_state = self.state_reconstructor(filtered_state)
-        
-        # 生成动作
-        action = self.policy_head(reconstructed_state)
-        
-        if squeeze_output:
-            action = action.squeeze(0)
-        
+        if seed is not None:
+            self.seed(seed)
+
+        # 自动选择运算设备
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # 用于记录整个 episode 内的观测和动作（可用于调试或训练数据收集）
+        self.obs_history = []
+        self.act_history = []
+
+    def seed(self, seed: int = 123) -> None:
+        """设置随机种子，保证结果可复现。"""
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+    def reset(self) -> None:
+        """
+        在每个 episode 开始时由外部调用，
+        清空历史缓存。
+        """
+        self.obs_history.clear()
+        self.act_history.clear()
+
+    def act(self, obs: np.ndarray) -> np.ndarray:
+        """
+        统一的动作生成流程：
+          1. 将观测拉平成一维向量
+          2. 调用子类的 get_action() 得到原始动作
+          3. 将动作限制到 [-1, 1]
+          4. 缓存本次观测和动作
+          5. 返回动作
+        """
+        obs = obs.reshape(-1).astype(np.float32)
+        action = self.get_action(obs)
+        action = np.clip(action, -1.0, 1.0).reshape(-1).astype(np.float32)
+
+        self.obs_history.append(obs)
+        self.act_history.append(action)
+
         return action
 
+    @abstractmethod
+    def get_action(self, obs: np.ndarray) -> np.ndarray:
+        """
+        子类必须实现：根据当前观测 obs 计算动作。
+        输入:
+          obs (np.ndarray): 一维观测向量
+        输出:
+          action (np.ndarray): 一维动作向量
+        """
+        ...
+
+    def close(self) -> None:
+        """可选：释放资源（如环境连接、文件句柄等）。"""
+        pass
 
 class NoiseFilter:
     """噪声过滤器"""
@@ -264,3 +225,16 @@ class PolicyAgent(BaseAgent):
             print(f"动作生成错误: {e}")
             # 返回安全的零动作
             return np.zeros(self.action_dim, dtype=np.float32)
+
+if __name__ == "__main__":
+    agent = PolicyAgent()
+    dummy_obs = np.random.rand(150).astype(np.float32)
+
+    a1 = agent.act(dummy_obs)
+    a2 = agent.act(dummy_obs * 2)
+
+    print("Action at step 1:", a1)
+    print("Action at step 2:", a2)
+
+    agent.reset()
+    agent.close()

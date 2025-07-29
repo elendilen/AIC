@@ -318,12 +318,25 @@ def main():
     os.makedirs(config.save_dir, exist_ok=True)
     with open(config_save_path, 'w') as f:
         json.dump(vars(config), f, indent=2)
-    
     print(f"训练配置保存到: {config_save_path}")
-    
+
+    # 生成一份config.json（供评估和环境使用）
+    config_json = {
+        "obs_init_mean": [-0.45, -0.40, -0.45, -0.48, -0.40],
+        "target_state": [-0.477452, -0.406494, -0.436498, -0.456012, -0.378295],
+        "noise_std": config.noise_std,
+        "delay_steps": 3,
+        "data_config": {
+            "data_path": config.data_path
+        }
+    }
+    config_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
+    with open(config_json_path, 'w') as f:
+        json.dump(config_json, f, indent=2)
+    print(f"评估用config.json已生成: {config_json_path}")
+
     # 开始训练
     agent = train_cql_agent(config, args.data_path)
-    
     print("训练完成！模型已保存。")
 
 

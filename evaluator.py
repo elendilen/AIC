@@ -17,34 +17,46 @@ class MockEnvironment:
         self.current_step = 0
         self.current_obs = None
 
-        # 尝试从 config.json 读取观测均值
+        # 只读取一次 config.json，所有依赖参数都从同一个 config 变量获取
         self.obs_init_mean = None
+        self.target_state = None
+        config = None
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
         if os.path.exists(config_path):
             try:
                 import json
                 with open(config_path, 'r') as f:
                     config = json.load(f)
-                # 支持 config["obs_init_mean"] 或自动用训练集均值
-                if "obs_init_mean" in config:
-                    self.obs_init_mean = np.array(config["obs_init_mean"], dtype=np.float32)
-                else:
-                    # 尝试用 data.csv 的均值
-                    data_path = config.get("data_config", {}).get("data_path", None)
-                    if data_path and os.path.exists(os.path.join(os.path.dirname(__file__), data_path)):
-                        import pandas as pd
-                        df = pd.read_csv(os.path.join(os.path.dirname(__file__), data_path))
-                        obs_cols = [c for c in df.columns if c.startswith("obs_")]
-                        self.obs_init_mean = df[obs_cols].mean().values.astype(np.float32)
             except Exception as e:
-                print(f"[警告] config.json读取观测均值失败: {e}")
-                self.obs_init_mean = None
+                print(f"[警告] config.json读取失败: {e}")
+                config = None
+
+        # 观测均值
+        if config and "obs_init_mean" in config:
+            self.obs_init_mean = np.array(config["obs_init_mean"], dtype=np.float32)
+        elif config:
+            # 尝试用 data.csv 的均值
+            data_path = config.get("data_config", {}).get("data_path", None)
+            if data_path and os.path.exists(os.path.join(os.path.dirname(__file__), data_path)):
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(os.path.join(os.path.dirname(__file__), data_path))
+                    obs_cols = [c for c in df.columns if c.startswith("obs_")]
+                    self.obs_init_mean = df[obs_cols].mean().values.astype(np.float32)
+                except Exception as e:
+                    print(f"[警告] data.csv读取观测均值失败: {e}")
+                    self.obs_init_mean = None
         if self.obs_init_mean is None:
             # 默认与训练数据分布接近
             self.obs_init_mean = np.array([-0.45, -0.40, -0.45, -0.48, -0.40], dtype=np.float32)
 
-        # 环境参数
-        self.target_state = np.array([0.5, -0.3, 0.0, 0.2, -0.1])  # 目标状态
+        # 目标状态
+        if config and "target_state" in config:
+            self.target_state = np.array(config["target_state"], dtype=np.float32)
+        if self.target_state is None:
+            # 默认目标状态（如无config.json或字段缺失时使用）
+            self.target_state = np.array([-0.477452, -0.406494, -0.436498, -0.456012, -0.378295], dtype=np.float32)
+        # 说明：目标状态一般应由任务需求或数据分析确定，当前默认值仅为示例。
         self.noise_std = 0.05  # 噪声标准差
         self.delay_steps = 3   # 控制延迟步数
         self.action_buffer = []
