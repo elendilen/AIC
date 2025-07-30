@@ -10,125 +10,69 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 class MockEnvironment:
     """模拟工业控制环境"""
     
-    def __init__(self, obs_dim=5, action_dim=3, max_steps=1000):
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.max_steps = max_steps
-        self.current_step = 0
-        self.current_obs = None
+    def __init__(self, obs_dim=5, action_dim=3, max_steps=1000, test_data_path=None):
+        import pandas as pd
+        # 优先用 test_data.csv，否则用 data.csv
+        if test_data_path is None:
+            test_data_path = os.path.join(os.path.dirname(__file__), 'assets', 'test_data.csv')
+        if not os.path.exists(test_data_path):
+            test_data_path = os.path.join(os.path.dirname(__file__), 'assets', 'data.csv')
+        self.df = pd.read_csv(test_data_path)
+        self.obs_cols = [c for c in self.df.columns if c.startswith('obs_')]
+        self.action_cols = [c for c in self.df.columns if c.startswith('action_')]
+        self.reward_col = 'reward'
+        self.max_steps = min(max_steps, len(self.df))
+        self.obs_dim = len(self.obs_cols)
+        self.action_dim = len(self.action_cols)
+        # 支持按轨迹分集
+        self.has_index = 'index' in self.df.columns
+        if self.has_index:
+            self.unique_indices = self.df['index'].unique()
+        self.traj_pointer = None  # 当前轨迹id
+        self.pointer = 0  # 当前在轨迹内的步数
 
-        # 只读取一次 config.json，所有依赖参数都从同一个 config 变量获取
-        self.obs_init_mean = None
-        self.target_state = None
-        config = None
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-        if os.path.exists(config_path):
-            try:
-                import json
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-            except Exception as e:
-                print(f"[警告] config.json读取失败: {e}")
-                config = None
-
-        # 观测均值
-        if config and "obs_init_mean" in config:
-            self.obs_init_mean = np.array(config["obs_init_mean"], dtype=np.float32)
-        elif config:
-            # 尝试用 data.csv 的均值
-            data_path = config.get("data_config", {}).get("data_path", None)
-            if data_path and os.path.exists(os.path.join(os.path.dirname(__file__), data_path)):
-                try:
-                    import pandas as pd
-                    df = pd.read_csv(os.path.join(os.path.dirname(__file__), data_path))
-                    obs_cols = [c for c in df.columns if c.startswith("obs_")]
-                    self.obs_init_mean = df[obs_cols].mean().values.astype(np.float32)
-                except Exception as e:
-                    print(f"[警告] data.csv读取观测均值失败: {e}")
-                    self.obs_init_mean = None
-        if self.obs_init_mean is None:
-            # 默认与训练数据分布接近
-            self.obs_init_mean = np.array([-0.45, -0.40, -0.45, -0.48, -0.40], dtype=np.float32)
-
-        # 目标状态
-        if config and "target_state" in config:
-            self.target_state = np.array(config["target_state"], dtype=np.float32)
-        if self.target_state is None:
-            # 默认目标状态（如无config.json或字段缺失时使用）
-            self.target_state = np.array([-0.477452, -0.406494, -0.436498, -0.456012, -0.378295], dtype=np.float32)
-        # 说明：目标状态一般应由任务需求或数据分析确定，当前默认值仅为示例。
-        self.noise_std = 0.05  # 噪声标准差
-        self.delay_steps = 3   # 控制延迟步数
-        self.action_buffer = []
-
-        # 系统动态参数
-        self.A = np.random.uniform(-0.1, 0.1, (obs_dim, obs_dim))  # 状态转移矩阵
-        self.B = np.random.uniform(-0.2, 0.2, (obs_dim, action_dim))  # 控制矩阵
-
-        # 稳定性调整
-        self.A *= 0.95  # 确保系统稳定
-        np.fill_diagonal(self.A, 0.9)  # 主对角线
-    
     def reset(self) -> np.ndarray:
-        """重置环境，观测初始化分布与训练一致"""
-        self.current_step = 0
-        # 用均值加微小扰动初始化
-        self.current_obs = self.obs_init_mean + np.random.normal(0, 0.01, self.obs_dim)
-        self.action_buffer = [np.zeros(self.action_dim) for _ in range(self.delay_steps)]
-        return self.current_obs.copy()
-    
+        import numpy as np
+        if self.has_index:
+            # 随机采样一条轨迹
+            self.traj_pointer = np.random.choice(self.unique_indices)
+            traj_mask = self.df['index'] == self.traj_pointer
+            self.traj_indices = self.df[traj_mask].index.to_list()
+            self.pointer = 0
+            obs = self.df.loc[self.traj_indices[self.pointer], self.obs_cols].values.astype(np.float32)
+            self.traj_len = len(self.traj_indices)
+        else:
+            # 没有轨迹信息，随机采样起点
+            self.traj_pointer = None
+            if len(self.df) > self.max_steps:
+                self.start_idx = np.random.randint(0, len(self.df) - self.max_steps)
+            else:
+                self.start_idx = 0
+            self.pointer = 0
+            obs = self.df.loc[self.start_idx + self.pointer, self.obs_cols].values.astype(np.float32)
+            self.traj_len = min(self.max_steps, len(self.df) - self.start_idx)
+        return obs
+
     def step(self, action: np.ndarray) -> tuple:
-        """环境步进"""
-        # 动作限制
-        action = np.clip(action, -1.0, 1.0)
-        
-        # 添加到延迟缓冲区
-        self.action_buffer.append(action.copy())
-        effective_action = self.action_buffer.pop(0)  # 获取延迟后的动作
-        
-        # 状态更新
-        next_obs = (
-            np.dot(self.A, self.current_obs) + 
-            np.dot(self.B, effective_action) +
-            np.random.normal(0, self.noise_std, self.obs_dim)
-        )
-        
-        # 状态限制
-        next_obs = np.clip(next_obs, -1.0, 1.0)
-        
-        # 计算奖励
-        reward = self._compute_reward(self.current_obs, effective_action, next_obs)
-        
-        # 更新状态
-        self.current_obs = next_obs
-        self.current_step += 1
-        
-        # 检查是否结束
-        done = self.current_step >= self.max_steps
-        
-        return next_obs.copy(), reward, done, {}
-    
-    def _compute_reward(self, obs: np.ndarray, action: np.ndarray, next_obs: np.ndarray) -> float:
-        """计算奖励"""
-        # 距离目标的距离奖励
-        distance_to_target = np.linalg.norm(next_obs - self.target_state)
-        distance_reward = -distance_to_target
-        
-        # 动作平滑性奖励
-        action_penalty = -0.1 * np.linalg.norm(action)
-        
-        # 稳定性奖励
-        state_change = np.linalg.norm(next_obs - obs)
-        stability_penalty = -0.05 * state_change
-        
-        # 状态限制惩罚
-        boundary_penalty = 0.0
-        if np.any(np.abs(next_obs) > 0.9):
-            boundary_penalty = -1.0
-        
-        total_reward = distance_reward + action_penalty + stability_penalty + boundary_penalty
-        
-        return total_reward
+        self.pointer += 1
+        if self.has_index:
+            done = self.pointer >= self.traj_len
+            if not done:
+                idx = self.traj_indices[self.pointer]
+                obs = self.df.loc[idx, self.obs_cols].values.astype(np.float32)
+                reward = self.df.loc[self.traj_indices[self.pointer-1], self.reward_col]
+            else:
+                obs = np.zeros(self.obs_dim, dtype=np.float32)
+                reward = 0.0
+        else:
+            done = self.pointer >= self.traj_len
+            if not done:
+                obs = self.df.loc[self.start_idx + self.pointer, self.obs_cols].values.astype(np.float32)
+                reward = self.df.loc[self.start_idx + self.pointer - 1, self.reward_col]
+            else:
+                obs = np.zeros(self.obs_dim, dtype=np.float32)
+                reward = 0.0
+        return obs, reward, done, {}
 
 
 def evaluate_agent(agent, num_episodes=10, max_steps=1000, verbose=True) -> Dict[str, Any]:

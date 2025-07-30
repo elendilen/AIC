@@ -36,7 +36,7 @@ class TrainingConfig:
         self.cql_alpha = 1.0
         
         # 训练设置
-        self.num_epochs = 1000
+        self.num_epochs = 120
         self.eval_frequency = 50
         self.save_frequency = 100
         self.early_stopping_patience = 200

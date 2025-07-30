@@ -126,13 +126,24 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
     """
     print(f"正在加载数据: {csv_path}")
     
+    import os
     try:
         df = pd.read_csv(csv_path)
         print(f"数据加载成功，形状: {df.shape}")
-        
+        n = len(df)
+        split_idx = int(n * 0.9)
+        train_df = df.iloc[:split_idx].reset_index(drop=True)
+        test_df = df.iloc[split_idx:].reset_index(drop=True)
+        # 保存测试集
+        test_save_path = os.path.join(os.path.dirname(csv_path), 'test_data.csv')
+        test_df.to_csv(test_save_path, index=False)
+        print(f"测试集已保存到: {test_save_path}")
+
+        # 下面的解析流程用train_df代替df
+        df = train_df
         # 解析数据
         data = {}
-        
+
         # 观测数据 (查找obs_1到obs_5列)
         obs_cols = [col for col in df.columns if col.startswith('obs_')]
         if len(obs_cols) >= 5:
@@ -151,7 +162,7 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
             else:
                 # 假设前5列是观测数据
                 data['obs'] = df.iloc[:, :5].values
-        
+
         # 动作数据 (查找action_1到action_3列)
         action_cols = [col for col in df.columns if col.startswith('action_')]
         if len(action_cols) >= 3:
@@ -170,7 +181,7 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
                 # 假设接下来3列是动作数据  
                 start_col = len(obs_cols_sorted) if 'obs_cols_sorted' in locals() else 5
                 data['action'] = df.iloc[:, start_col:start_col+3].values
-        
+
         # 轨迹索引 - 需要在处理next_obs之前先处理index
         if 'index' in df.columns:
             data['index'] = df['index'].values
@@ -198,21 +209,21 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
             # 生成next_obs：按轨迹组织数据，每个轨迹内部向前偏移一步
             next_obs = []
             unique_indices = np.unique(data['index'])
-            
+
             for idx in unique_indices:
                 mask = data['index'] == idx
                 traj_obs = data['obs'][mask]
-                
+
                 # 创建该轨迹的next_obs
                 traj_next_obs = np.zeros_like(traj_obs)
                 traj_next_obs[:-1] = traj_obs[1:]  # 向前偏移
                 traj_next_obs[-1] = traj_obs[-1]   # 最后一步保持不变
-                
+
                 next_obs.append(traj_next_obs)
-            
+
             data['next_obs'] = np.vstack(next_obs)
             print("自动生成next_obs数据")
-        
+
         # 奖励数据
         if 'reward' in df.columns:
             data['reward'] = df['reward'].values
@@ -220,7 +231,7 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
             # 如果没有奖励列，使用随机奖励作为占位符
             data['reward'] = np.random.randn(len(df))
             print("警告: 未找到奖励列，使用随机数据")
-        
+
         # 轨迹索引
         if 'index' in df.columns:
             data['index'] = df['index'].values
@@ -234,12 +245,12 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
             num_trajectories = len(df) // traj_length
             data['index'] = np.repeat(np.arange(num_trajectories), traj_length)[:len(df)]
             print(f"警告: 未找到轨迹索引，自动创建{num_trajectories}条轨迹")
-        
+
         # 数据类型转换和范围处理
         for key in ['obs', 'action', 'next_obs']:
             if key in data:
                 data[key] = data[key].astype(np.float32)
-                
+
                 # 对于观测数据，如果不在[-1,1]范围内，进行归一化
                 if key in ['obs', 'next_obs']:
                     data_min = data[key].min()
@@ -250,16 +261,16 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
                         data_range = data_max - data_min
                         data[key] = 2 * (data[key] - data_min) / data_range - 1
                         print(f"归一化后{key}范围: [{data[key].min():.3f}, {data[key].max():.3f}]")
-                
+
                 # 对于动作数据，确保在[-1, 1]范围内
                 elif key == 'action':
                     if np.any(np.abs(data[key]) > 1.0):
                         print(f"警告: {key}数据超出[-1,1]范围，进行裁剪")
                         data[key] = np.clip(data[key], -1.0, 1.0)
-        
+
         data['reward'] = data['reward'].astype(np.float32)
         data['index'] = data['index'].astype(np.int32)
-        
+
         # 打印数据统计信息
         print("数据统计:")
         for key, values in data.items():
@@ -267,9 +278,9 @@ def load_offline_data(csv_path: str) -> Dict[str, np.ndarray]:
                 print(f"  {key}: shape={values.shape}, min={values.min():.3f}, max={values.max():.3f}")
             else:
                 print(f"  {key}: shape={values.shape}, unique_values={len(np.unique(values))}")
-        
+
         return data
-    
+
     except Exception as e:
         print(f"数据加载失败: {e}")
         # 生成示例数据
