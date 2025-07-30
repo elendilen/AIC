@@ -18,40 +18,56 @@ from utils.data_utils import (
 )
 
 
+
 class TrainingConfig:
-    """训练配置"""
-    
-    def __init__(self):
+    """训练配置，全部参数从config.json读取，且支持命令行/自定义config_path覆盖"""
+    def __init__(self, config_json_path=None, override_dict=None):
+        # 1. 读取根目录config.json
+        if config_json_path is None:
+            config_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
+        assert os.path.exists(config_json_path), f"配置文件不存在: {config_json_path}"
+        with open(config_json_path, 'r') as f:
+            config_dict = json.load(f)
+
+        # 2. 解析参数
         # 模型参数
-        self.state_dim = 5
-        self.action_dim = 3
-        self.hidden_dim = 256
-        self.seq_len = 10
-        
+        self.state_dim = config_dict.get('state_dim', 5)
+        self.action_dim = config_dict.get('action_dim', 3)
+        self.hidden_dim = config_dict.get('hidden_dim', 256)
+        self.seq_len = config_dict.get('seq_len', 10)
+        # obs_init_mean/target_state 只用于评估
+
         # 训练参数
-        self.batch_size = 256
-        self.learning_rate = 3e-4
-        self.gamma = 0.99
-        self.tau = 0.005
-        self.cql_alpha = 1.0
-        
-        # 训练设置
-        self.num_epochs = 120
-        self.eval_frequency = 50
-        self.save_frequency = 100
-        self.early_stopping_patience = 200
-        
+        self.batch_size = config_dict.get('batch_size', 256)
+        self.learning_rate = config_dict.get('learning_rate', 3e-4)
+        self.gamma = config_dict.get('gamma', 0.99)
+        self.tau = config_dict.get('tau', 0.005)
+        self.cql_alpha = config_dict.get('cql_alpha', 1.0)
+        self.num_epochs = config_dict.get('num_epochs', 120)
+        self.eval_frequency = config_dict.get('eval_frequency', 50)
+        self.save_frequency = config_dict.get('save_frequency', 100)
+        self.early_stopping_patience = config_dict.get('early_stopping_patience', 200)
+
         # 数据参数
-        self.noise_std = 0.01
-        self.data_augmentation = True
-        
+        self.noise_std = config_dict.get('noise_std', 0.013)
+        self.data_augmentation = config_dict.get('data_augmentation', True)
+
         # 设备设置
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
+        self.device = config_dict.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+
         # 路径设置
-        self.data_path = 'assets/data.csv'
-        self.save_dir = 'checkpoints'
-        self.log_dir = 'logs'
+        # 优先data_config.data_path，否则data_path，否则默认
+        self.data_path = config_dict.get('data_config', {}).get('data_path', config_dict.get('data_path', 'assets/data.csv'))
+        self.save_dir = config_dict.get('save_dir', 'checkpoints')
+        self.log_dir = config_dict.get('log_dir', 'logs')
+
+        # 延迟补偿参数
+        self.delay_steps = config_dict.get('delay_steps', 6)
+
+        # 允许外部覆盖
+        if override_dict:
+            for k, v in override_dict.items():
+                setattr(self, k, v)
 
 
 def train_cql_agent(config: TrainingConfig, data_path: str = None) -> CQLAgent:
@@ -282,58 +298,24 @@ def plot_training_curves(history: Dict[str, list], save_dir: str):
 
 def main():
     """主函数"""
+
     parser = argparse.ArgumentParser(description='训练离线强化学习代理')
     parser.add_argument('--data_path', type=str, default=None, help='数据文件路径')
-    parser.add_argument('--config_path', type=str, default=None, help='配置文件路径')
-    parser.add_argument('--batch_size', type=int, default=256, help='批次大小')
-    parser.add_argument('--learning_rate', type=float, default=3e-4, help='学习率')
-    parser.add_argument('--num_epochs', type=int, default=1000, help='训练轮数')
-    parser.add_argument('--cql_alpha', type=float, default=1.0, help='CQL正则化系数')
-    
+    parser.add_argument('--config_path', type=str, default=None, help='配置文件路径（json）')
+    parser.add_argument('--override', type=str, default=None, help='json字符串，额外参数覆盖')
     args = parser.parse_args()
-    
-    # 创建配置
-    config = TrainingConfig()
-    
-    # 从命令行参数更新配置
-    if args.batch_size:
-        config.batch_size = args.batch_size
-    if args.learning_rate:
-        config.learning_rate = args.learning_rate
-    if args.num_epochs:
-        config.num_epochs = args.num_epochs
-    if args.cql_alpha:
-        config.cql_alpha = args.cql_alpha
-    
-    # 如果提供了配置文件，加载配置
-    if args.config_path and os.path.exists(args.config_path):
-        with open(args.config_path, 'r') as f:
-            config_dict = json.load(f)
-        for key, value in config_dict.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
-    
-    # 保存当前配置
+
+    # 统一读取根目录config.json，允许--config_path覆盖，允许--override覆盖
+    config_json_path = args.config_path if args.config_path else os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
+    override_dict = json.loads(args.override) if args.override else None
+    config = TrainingConfig(config_json_path=config_json_path, override_dict=override_dict)
+
+    # 保存当前配置到训练目录
     config_save_path = os.path.join(config.save_dir, 'training_config.json')
     os.makedirs(config.save_dir, exist_ok=True)
     with open(config_save_path, 'w') as f:
         json.dump(vars(config), f, indent=2)
     print(f"训练配置保存到: {config_save_path}")
-
-    # 生成一份config.json（供评估和环境使用）
-    config_json = {
-        "obs_init_mean": [-0.45, -0.40, -0.45, -0.48, -0.40],
-        "target_state": [-0.477452, -0.406494, -0.436498, -0.456012, -0.378295],
-        "noise_std": config.noise_std,
-        "delay_steps": 3,
-        "data_config": {
-            "data_path": config.data_path
-        }
-    }
-    config_json_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
-    with open(config_json_path, 'w') as f:
-        json.dump(config_json, f, indent=2)
-    print(f"评估用config.json已生成: {config_json_path}")
 
     # 开始训练
     agent = train_cql_agent(config, args.data_path)

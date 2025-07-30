@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import torch.nn as nn
 from network_type.policy_network import PolicyNetwork
@@ -138,19 +141,27 @@ class PolicyAgent(BaseAgent):
     def __init__(self):
         super().__init__()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # 网络参数
-        self.obs_dim = 5
-        self.action_dim = 3
-        self.seq_len = 10
-        
+
+        # === 读取offline_rl_project/config.json ===
+        import json
+        config_json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
+        config_json_path = os.path.normpath(config_json_path)
+        if not os.path.exists(config_json_path):
+            raise FileNotFoundError(f"config.json未找到: {config_json_path}")
+        with open(config_json_path, 'r') as f:
+            config_dict = json.load(f)
+        self.obs_dim = config_dict.get('state_dim', 5)
+        self.action_dim = config_dict.get('action_dim', 3)
+        self.seq_len = config_dict.get('seq_len', 10)
+        self.delay_steps = config_dict.get('delay_steps', 6)
+
         # 初始化策略网络
         self.policy = PolicyNetwork(
             obs_dim=self.obs_dim,
             action_dim=self.action_dim,
             seq_len=self.seq_len
         ).to(self.device)
-        
+
         # 加载模型权重
         model_path = os.path.join(os.path.dirname(__file__), 'model.pth')
         if os.path.exists(model_path):
@@ -164,18 +175,27 @@ class PolicyAgent(BaseAgent):
         else:
             print(f"模型文件不存在: {model_path}")
             print("使用随机初始化的权重")
-        
+
         self.policy.eval()
-        
+
         # 初始化辅助组件
         self.noise_filter = NoiseFilter(obs_dim=self.obs_dim)
-        self.delay_compensator = DelayCompensator(max_delay=5)
-        
+        self.delay_compensator = DelayCompensator(max_delay=self.delay_steps)
+
         # 观测历史
         self.obs_history = deque(maxlen=self.seq_len)
-        
+
         # 初始化历史缓冲区
         self._initialize_history()
+
+        # 调试：打印主要参数
+        print("[PolicyAgent 配置参数]")
+        print(f"  obs_dim: {self.obs_dim}")
+        print(f"  action_dim: {self.action_dim}")
+        print(f"  seq_len: {self.seq_len}")
+        print(f"  delay_steps: {self.delay_steps}")
+        print(f"  device: {self.device}")
+        print(f"  policy网络结构: {self.policy}")
     
     def _initialize_history(self):
         """初始化历史缓冲区"""
@@ -228,8 +248,17 @@ class PolicyAgent(BaseAgent):
 
 if __name__ == "__main__":
     agent = PolicyAgent()
-    dummy_obs = np.random.rand(150).astype(np.float32)
+    print("\n[PolicyAgent 内部参数调试]")
+    print(f"obs_dim: {agent.obs_dim}")
+    print(f"action_dim: {agent.action_dim}")
+    print(f"seq_len: {agent.seq_len}")
+    print(f"delay_steps: {agent.delay_steps}")
+    print(f"device: {agent.device}")
+    print(f"policy网络结构: {agent.policy}")
+    print(f"noise_filter: {agent.noise_filter}")
+    print(f"delay_compensator: {agent.delay_compensator}")
 
+    dummy_obs = np.random.rand(agent.obs_dim).astype(np.float32)
     a1 = agent.act(dummy_obs)
     a2 = agent.act(dummy_obs * 2)
 
